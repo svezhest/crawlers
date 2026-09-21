@@ -7,7 +7,7 @@ Command-line harvesters for four sources, one folder each, sharing the same conv
 | [`youtube/`](youtube/) | `crawl-youtube` | Video transcripts (text + JSONL) | none (optional: your own YouTube login for the fast path) |
 | [`reddit/`](reddit/) | `crawl-reddit` | Subreddit submissions + comments | none for `rss`/`archive`; free OAuth app for `crawl` |
 | [`telegram/`](telegram/) | `crawl-telegram` | Chats and channels incl. comment threads, polls, media | Telegram API id/hash (my.telegram.org) |
-| [`tiktok/`](tiktok/) | `crawl-tiktok` | Profile posts, comments with replies, photo-post images | none |
+| [`tiktok/`](tiktok/) | `crawl-tiktok` | Profile posts, comments with replies, photo-post images | none (a Chromium window opens; you solve TikTok's CAPTCHA by hand) |
 
 Every tool is:
 
@@ -50,6 +50,22 @@ data/
   <chat-slug>/{meta.json, messages.jsonl, media/}                  # telegram
   tiktok/<user>/{posts.jsonl, progress.json, <post_id>/images/}    # tiktok
 ```
+
+## Output formats are not unified (yet)
+
+Each tool keeps the native schema of its source, documented in its own README:
+
+| Source | Text | Author | Time | Parent |
+|---|---|---|---|---|
+| youtube | `text` | — | `fetched_utc` | — |
+| reddit | `text` (+`title`) | `author` | `created_utc` | `link_id` / `extra.parent_id` |
+| telegram | `text` | `sender_name` / `sender_id` | `date` (ISO) | `reply_to` / `post_id` |
+| tiktok | `desc`, comments `text` | `username`, comments `user` | `create_time` | nested `comments[].replies[]` |
+
+Planned: an `export` subcommand in every tool that writes a common envelope
+`{id, source, url, author, title, text, created_at, parent_id, extra}` to a single
+JSONL, so one downstream pipeline can read all four sources. Native files stay as they
+are; the envelope is a projection. Not started.
 
 ## Responsible use
 

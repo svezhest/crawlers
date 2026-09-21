@@ -32,17 +32,22 @@ class Blocked(Exception):
 
 
 class TikTok:
-    def __init__(self, username: str, proxy: str | None, delay: float):
+    def __init__(self, username: str, proxy: str | None, delay: float, cookies: dict | None = None,
+                 browser=None):
         self.user = username.lstrip("@")
         self.profile_url = f"https://www.tiktok.com/@{self.user}"
         self.delay = delay
+        self.browser = browser  # BrowserTransport or None (plain requests)
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": UA, "Referer": "https://www.tiktok.com/",
                                "Origin": "https://www.tiktok.com"})
         if proxy:
             self.s.proxies = {"http": proxy, "https": proxy}
+        for k, v in (cookies or {}).items():
+            self.s.cookies.set(k, v, domain=".tiktok.com")
         self.calls = 0
-        self.warm()
+        if browser is None:
+            self.warm()
 
     def warm(self) -> None:
         try:
@@ -71,14 +76,44 @@ class TikTok:
             r.raise_for_status()
         raise Blocked(f"HTTP {r.status_code} on {url}")
 
+    def _json(self, url: str, params: dict) -> dict:
+        if self.browser is not None:
+            return self.browser.get_json(url, params)
+        return self._get(url, params=params).json()
+
     def _ssr(self, url: str) -> dict:
-        html = self._get(url).text
+        html = self.browser.page_html(url) if self.browser is not None else self._get(url).text
         if len(html) < CAPTCHA_THRESHOLD:
             raise Blocked(f"short response ({len(html)} bytes) — CAPTCHA/blocked?")
         m = SSR_RE.search(html)
         if not m:
             raise Blocked("SSR data not found in page")
         return json.loads(m.group(1))
+
+    @staticmethod
+    def item_to_post(item: dict, profile_url: str) -> dict:
+        """Item struct (from item_list or a post page's SSR) -> our post record."""
+        stats = item.get("stats") or {}
+        images = [((img.get("imageURL") or {}).get("urlList") or [None])[0]
+                  for img in ((item.get("imagePost") or {}).get("images") or [])]
+        pid = item.get("id")
+        kind = "photo" if images else "video"
+        return {"post_id": pid, "url": f"{profile_url}/{kind}/{pid}",
+                "desc": item.get("desc", ""), "create_time": item.get("createTime"),
+                "is_photo_post": bool(images),
+                "like_count": stats.get("diggCount", 0), "share_count": stats.get("shareCount", 0),
+                "collect_count": stats.get("collectCount", 0), "comment_count": stats.get("commentCount", 0),
+                "play_count": stats.get("playCount", 0),
+                "tags": [c.get("title") for c in item.get("challenges") or [] if c.get("title")],
+                "image_urls": [u for u in images if u]}
+
+    def discover_items(self) -> list[dict]:
+        """Browser driver: full item structs straight from the profile feed."""
+        if self.browser is None:
+            raise Blocked("discover_items needs the browser driver")
+        items = self.browser.discover(self.profile_url)
+        print(f"[tiktok] discovered {len(items)} posts on @{self.user}", file=sys.stderr)
+        return items
 
     def discover_posts(self) -> list[str]:
         ssr = self._ssr(self.profile_url)
@@ -88,9 +123,9 @@ class TikTok:
             raise Blocked("secUid not found on profile page")
         ids, cursor, more = [], 0, True
         while more:
-            data = self._get("https://www.tiktok.com/api/post/item_list/",
-                             params={"aid": 1988, "app_language": "en", "app_name": "tiktok_web",
-                                     "count": 35, "secUid": sec_uid, "cursor": cursor}).json()
+            data = self._json("https://www.tiktok.com/api/post/item_list/",
+                              {"aid": 1988, "app_language": "en", "app_name": "tiktok_web",
+                               "count": 35, "secUid": sec_uid, "cursor": cursor})
             for it in data.get("itemList") or []:
                 if it.get("id"):
                     ids.append(it["id"])
@@ -105,32 +140,25 @@ class TikTok:
                 .get("itemInfo", {}).get("itemStruct"))
         if not item:
             raise Blocked("itemStruct not found")
-        stats = item.get("stats") or {}
-        images = [((img.get("imageURL") or {}).get("urlList") or [None])[0]
-                  for img in ((item.get("imagePost") or {}).get("images") or [])]
-        return {"post_id": post_id, "url": f"{self.profile_url}/video/{post_id}",
-                "desc": item.get("desc", ""), "create_time": item.get("createTime"),
-                "is_photo_post": bool(images),
-                "like_count": stats.get("diggCount", 0), "share_count": stats.get("shareCount", 0),
-                "collect_count": stats.get("collectCount", 0), "comment_count": stats.get("commentCount", 0),
-                "play_count": stats.get("playCount", 0),
-                "tags": [c.get("title") for c in item.get("challenges") or [] if c.get("title")],
-                "image_urls": [u for u in images if u]}
+        item.setdefault("id", post_id)
+        return self.item_to_post(item, self.profile_url)
 
     @staticmethod
     def _comment(v: dict) -> dict | None:
         cid = v.get("cid")
         if not cid:
             return None
-        return {"cid": cid, "user": ((v.get("user") or {}).get("uniqueId")) or "unknown",
-                "text": v.get("text", ""), "like_count": v.get("diggCount", 0),
-                "reply_count": v.get("replyCommentTotal", 0), "create_time": v.get("createTime"),
+        u = v.get("user") or {}
+        return {"cid": cid, "user": u.get("unique_id") or u.get("uniqueId") or "unknown",
+                "text": v.get("text", ""), "like_count": v.get("digg_count", v.get("diggCount", 0)),
+                "reply_count": v.get("reply_comment_total", v.get("replyCommentTotal", 0)),
+                "create_time": v.get("create_time", v.get("createTime")),
                 "replies": []}
 
     def _page(self, url: str, params: dict) -> list[dict]:
         out, cursor, empty = [], 0, 0
         while True:
-            data = self._get(url, params={**params, "cursor": cursor}).json()
+            data = self._json(url, {**params, "cursor": cursor})
             arr = data.get("comments") or []
             if not arr:
                 empty += 1
@@ -139,7 +167,7 @@ class TikTok:
                 continue
             empty = 0
             out.extend(c for c in (self._comment(v) for v in arr) if c)
-            if not data.get("hasMore"):
+            if not (data.get("has_more") or data.get("hasMore")):
                 break
             cursor = int(data.get("cursor") or 0)
         return out
@@ -168,10 +196,14 @@ class TikTok:
                 n += 1
                 continue
             try:
-                r = self.s.get(u, timeout=30)
-                if r.status_code == 200 and len(r.content) > 1000:
-                    p.write_bytes(r.content)
+                if self.browser is not None:
+                    body = self.browser.get_bytes(u)
+                else:
+                    r = self.s.get(u, timeout=30)
+                    body = r.content if r.status_code == 200 else b""
+                if len(body) > 1000:
+                    p.write_bytes(body)
                     n += 1
-            except requests.RequestException:
+            except Exception:
                 pass
         return n

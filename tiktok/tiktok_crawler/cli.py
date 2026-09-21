@@ -1,5 +1,8 @@
 """crawl-tiktok — download a TikTok profile: posts, comments (+replies), photo-post images.
 
+A real Chromium window opens (Playwright). When TikTok shows a CAPTCHA, solve it there;
+the crawler waits and then continues.
+
     crawl-tiktok profile @someuser
     crawl-tiktok profile someuser --photos-only --with-images --proxy http://127.0.0.1:20171
     crawl-tiktok profile someuser --no-comments --max 50
@@ -33,10 +36,10 @@ def main() -> None:
     _load_dotenv(Path.cwd() / ".env")
     ap = argparse.ArgumentParser(prog="crawl-tiktok", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default="data")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("profile", help="scrape all posts of one profile")
     p.add_argument("username")
+    p.add_argument("--out", default="data", help="output directory (default ./data)")
     p.add_argument("--proxy", default=os.environ.get("TIKTOK_PROXY") or None)
     p.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
     p.add_argument("--max", type=int, help="stop after N newly processed posts")
@@ -45,8 +48,14 @@ def main() -> None:
     p.add_argument("--with-images", action="store_true", help="download photo-post images")
     p.add_argument("--photos-only", action="store_true", help="skip video-only posts")
     p.add_argument("--retry-errors", action="store_true", help="retry posts that errored before")
+    p.add_argument("--driver", choices=["requests", "browser"], default="browser",
+                   help="browser (default): real Chromium, you solve CAPTCHAs by hand; "
+                        "requests: plain HTTP, only works from IPs TikTok trusts")
+    p.add_argument("--headless", action="store_true", help="browser driver without a window (no CAPTCHA solving)")
+    p.add_argument("--human-wait", type=int, default=300, help="seconds to wait for a CAPTCHA to be solved")
     s = sub.add_parser("stats", help="progress summary for a profile")
     s.add_argument("username")
+    s.add_argument("--out", default="data")
     a = ap.parse_args()
 
     user = a.username.lstrip("@")
@@ -67,13 +76,28 @@ def main() -> None:
         tmp.write_text(json.dumps(progress, indent=1))
         tmp.replace(prog_path)
 
-    tt = TikTok(user, a.proxy, a.delay)
+    browser = None
+    if a.driver == "browser":
+        from .browser import BrowserTransport
+        browser = BrowserTransport(Path(a.out) / "tiktok" / "browser_profile", a.proxy, a.delay,
+                                   headless=a.headless, human_wait=a.human_wait)
+        tt = TikTok(user, a.proxy, a.delay, browser=browser)
+    else:
+        tt = TikTok(user, a.proxy, a.delay)
+    details: dict[str, dict] = {}   # browser driver: post records already known from the feed
     try:
-        ids = tt.discover_posts()
+        if browser is not None:
+            for it in tt.discover_items():
+                details[it["id"]] = TikTok.item_to_post(it, tt.profile_url)
+            ids = list(details)
+        else:
+            ids = tt.discover_posts()
     except Blocked as e:
         print(f"[tiktok] discovery failed ({e}); falling back to known ids", file=sys.stderr)
         ids = list(progress)
     if not ids:
+        if browser is not None:
+            browser.close()
         raise SystemExit("[tiktok] no posts found")
 
     done = 0
@@ -86,7 +110,7 @@ def main() -> None:
                 break
             print(f"[{i}/{len(ids)}] {pid}", file=sys.stderr)
             try:
-                post = tt.post_detail(pid)
+                post = details.get(pid) or tt.post_detail(pid)
                 if a.photos_only and not post["is_photo_post"]:
                     progress[pid] = "skip:video-only"
                     continue
@@ -112,6 +136,9 @@ def main() -> None:
         save()
         print("\n[tiktok] interrupted; progress saved.", file=sys.stderr)
         sys.exit(130)
+    finally:
+        if browser is not None:
+            browser.close()
     save()
     by = {}
     for v in progress.values():

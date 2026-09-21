@@ -3,7 +3,7 @@ name = "tiktok-crawler"
 version = "0.1.0"
 description = "Download a TikTok profile's posts (metadata, comments with replies, photo-post images) to JSONL"
 requires-python = ">=3.11"
-dependencies = ["requests>=2.31", "requests[socks]>=2.31"]
+dependencies = ["requests>=2.31", "requests[socks]>=2.31", "playwright>=1.45"]
 
 [project.scripts]
 crawl-tiktok = "tiktok_crawler.cli:main"
