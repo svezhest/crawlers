@@ -1,0 +1,25 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+
+# harvested data and browser profiles
+data/
+**/data/
+*_profile/
+**/browser_profile/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/

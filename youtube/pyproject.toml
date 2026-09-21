@@ -1,0 +1,24 @@
+[project]
+name = "youtube-crawler"
+version = "0.1.0"
+description = "Resumable, rate-limit-aware YouTube transcript downloader (CLI)"
+requires-python = ">=3.11"
+dependencies = [
+    "youtube-transcript-api>=1.0",
+    "requests>=2.31",
+    "requests[socks]>=2.31",
+]
+
+[project.optional-dependencies]
+# `crawl-youtube login` / `crawl-youtube panel`: logged-in fast path via a real Chromium
+browser = ["playwright>=1.45"]
+
+[project.scripts]
+crawl-youtube = "youtube_crawler.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["youtube_crawler"]

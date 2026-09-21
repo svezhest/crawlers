@@ -1,0 +1,16 @@
+[project]
+name = "reddit-crawler"
+version = "0.1.0"
+description = "Polite, resumable Reddit harvester: RSS (no auth), Arctic Shift archive (no auth, full history), OAuth crawl"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31"]
+
+[project.scripts]
+crawl-reddit = "reddit_crawler.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reddit_crawler"]
